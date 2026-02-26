@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Webcam + Digital Twin</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #e0e0e0;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .container {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      gap: 0;
+    }
+    .panel {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .panel-label {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      opacity: 0.9;
+      z-index: 2;
+    }
+    .webcam-panel .panel-label { color: #6ee7b7; }
+    .twin-panel .panel-label { color: #93c5fd; }
+    .webcam-panel {
+      background: #111;
+      border-right: 1px solid #222;
+    }
+    .webcam-panel img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    .twin-panel {
+      background: #000;
+    }
+    #twin-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="panel webcam-panel">
+      <span class="panel-label">Webcam</span>
+      <img src="/video_feed" alt="Webcam stream" id="webcam-img" />
+    </div>
+    <div class="panel twin-panel">
+      <span class="panel-label">Digital Twin — 10×10 Floor · Drag to rotate, scroll to zoom</span>
+      <canvas id="twin-canvas"></canvas>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const canvas = document.getElementById('twin-canvas');
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87CEEB);
+
+      const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+      camera.position.set(8, 10, 12);
+      camera.lookAt(0, 0, 0);
+
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      const controls = new THREE.OrbitControls(camera, canvas);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.05;
+      controls.minDistance = 2;
+      controls.maxDistance = 50;
+      controls.target.set(0, 0, 0);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+      // 10x10 grid floor — light gray, transparent
+      const gridSize = 10;
+      const grid = new THREE.GridHelper(gridSize, gridSize, 0xcccccc, 0xb0b0b0);
+      grid.position.y = 0;
+      grid.material.transparent = true;
+      grid.material.opacity = 0.7;
+      scene.add(grid);
+
+      // Light gray floor plane, transparent
+      const floorGeom = new THREE.PlaneGeometry(gridSize, gridSize, 1, 1);
+      const floorMat = new THREE.MeshBasicMaterial({
+        color: 0xd0d0d0,
+        transparent: true,
+        opacity: 0.35,
+        side: THREE.DoubleSide
+      });
+      const floor = new THREE.Mesh(floorGeom, floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = -0.001;
+      scene.add(floor);
+
+      // Brighter lighting for scene and person
+      const ambient = new THREE.AmbientLight(0xc4d8e8, 0.85);
+      scene.add(ambient);
+      const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+      dir.position.set(8, 12, 8);
+      dir.castShadow = true;
+      scene.add(dir);
+      const fill = new THREE.DirectionalLight(0xe8f0f8, 0.5);
+      fill.position.set(-5, 6, 5);
+      scene.add(fill);
+
+      // 3D person (person.glb) from project folder — shown when face is detected
+      let personModel = null;
+      let lastFaceState = false;
+      const loader = new THREE.GLTFLoader();
+      loader.load(
+        '/person.glb',
+        function (gltf) {
+          personModel = gltf.scene;
+          personModel.visible = false;
+          personModel.position.set(0, 0, 0);
+          personModel.rotation.y = Math.PI;
+          scene.add(personModel);
+          // Compute bounding box and scale so person is ~1.8 units tall on the floor
+          const box = new THREE.Box3().setFromObject(personModel);
+          const size = new THREE.Vector3();
+          box.getSize(size);
+          const targetHeight = 1.8;
+          const scale = targetHeight / Math.max(size.y, 0.001);
+          personModel.scale.setScalar(scale);
+          box.setFromObject(personModel);
+          const center = box.getCenter(new THREE.Vector3());
+          personModel.position.x = -center.x;
+          personModel.position.z = -center.z;
+          personModel.position.y = -box.min.y;
+          // Apply current face state as soon as model is ready
+          if (personModel) personModel.visible = lastFaceState;
+        },
+        function (xhr) {
+          if (xhr.lengthComputable) console.log('person.glb: ' + Math.round(100 * xhr.loaded / xhr.total) + '%');
+        },
+        function (err) { console.error('Error loading person.glb', err); }
+      );
+
+      // Poll face detection and show/hide person
+      setInterval(function () {
+        fetch('/api/face').then(function (r) { return r.json(); }).then(function (data) {
+          lastFaceState = !!data.faceDetected;
+          if (personModel) personModel.visible = lastFaceState;
+        }).catch(function () {});
+      }, 150);
+
+      function resize() {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        if (canvas.width !== width || canvas.height !== height) {
+          renderer.setSize(width, height);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+        }
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        resize();
+        controls.update();
+        renderer.render(scene, camera);
+      }
+      animate();
+    })();
+  </script>
+</body>
+</html>
